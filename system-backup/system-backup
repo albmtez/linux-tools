@@ -1,0 +1,89 @@
+#!/bin/sh
+
+START=$(date +%s)
+
+BACKUPS_HOME="/discos/BackupSistema/backups"
+DIR_TO_BACKUP="/"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+Prog=$(basename $0)
+Pid=$$
+PidFile=/tmp/$Prog.pid
+
+LockFile() {
+    ## Manage LockFile ##
+    # Usage:  LockFile [ create | remove | test ] #
+    _LockCmd=$1
+    rcode=0
+    case $_LockCmd in
+        test)   [ -f $PidFile ] && _LockPid=$(cat $PidFile) && rcode=1
+                [ $_LockPid ] && [ -d /proc/$_LockPid ] && rcode=2
+                #[ $rcode -eq 1 ] && echo "Stale Lockfile (pid:$_LockPid)"
+                #[ $rcode -eq 2 ] && echo "Active Lockfile (pid:$_LockPid)" 
+                return $rcode
+                ;;
+        remove) [ -f $PidFile ] && rm -f $PidFile
+                ;;
+        create) LockFile test
+                RetVal=$?
+                [ $RetVal -eq 2 ] && echo "[${RED}ERROR${NC}] $Prog already running." && exit 1
+                if [ $RetVal -eq 1 ]; then
+                    #echo "Info: Removing stale lockfile."
+                    LockFile remove
+                fi
+                touch $PidFile
+                echo $Pid > $PidFile
+                ;;
+        *)  echo "[Internal Error] $FUNCNAME: unknown argument '$_LockCmd'."
+                ;;
+    esac
+                
+}
+
+LockFile create
+
+# Calculates the unique target path for the backup.
+hostname=`hostname`
+date=`date "+%Y-%m-%dT%H:%M:%S"`
+current_backup_dir="${BACKUPS_HOME}/${hostname}/${date}"
+while [ -d $current_backup_dir ]; do
+	date=`date "+%Y-%m-%dT%H:%M:%S"`
+	current_backup_dir="${BACKUPS_HOME}/${hostname}/${date}"
+done
+
+echo "Starting backup..."
+echo "    Source   = $DIR_TO_BACKUP"
+echo "    Target   = $current_backup_dir"
+
+# Incremental backup.
+mkdir -p $current_backup_dir
+rsync -aAXP \
+      --exclude=/dev \
+      --exclude=/proc \
+      --exclude=/sys \
+      --exclude=/tmp \
+      --exclude=/run \
+      --exclude=/mnt \
+      --exclude=/media \
+      --exclude=/lost+found \
+      --exclude=/discos \
+      --link-dest=$BACKUPS_HOME/$hostname/current $DIR_TO_BACKUP $current_backup_dir
+rc=$?
+
+# Current link pointing to the recently created backup.
+if [ $rc -eq 0 ]; then
+	echo "[${GREEN}OK${NC}] Backup ended without errors"
+	[ -d $BACKUPS_HOME/$hostname/current ] && rm -f $BACKUPS_HOME/$hostname/current
+	ln -s ${date} $BACKUPS_HOME/$hostname/current
+	rc=$?
+	[ $rc -ne 0 ] && echo "[${RED}ERROR${NC}] Impossible to link latest backup with 'current' pointer"
+else
+	echo "[${RED}ERROR${NC}] Backup in error"
+fi
+
+END=$(date +%s)
+TIME_DIFF=$(($END - $START))
+echo "Elapsed time: $(($TIME_DIFF / 60)) minutes and $(($TIME_DIFF % 60)) seconds"
